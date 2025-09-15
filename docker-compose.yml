@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  openplc:
+    image: thiagoralves/openplc_v3
+    container_name: openplc_runtime
+    ports:
+      - "8080:8080"  # Web UI for OpenPLC
+      - "502:502"    # Modbus/TCP port
+    volumes:
+      - ./plc_logic:/usr/src/app/plc_logic # Mounts your local logic folder into the container
+    networks:
+      - control_network
+
+networks:
+  control_network:
+    driver: bridge
