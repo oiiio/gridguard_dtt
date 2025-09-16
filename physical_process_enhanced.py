@@ -4,9 +4,17 @@ import time
 import numpy as np
 import json
 from datetime import datetime
+import os # <-- ADDED: To handle file paths
 
 class PowerSystemHMI:
     def __init__(self):
+        # --- ADDED: Define log file path and ensure directory exists ---
+        self.log_file = "/usr/src/app/logs/power_flow.log"
+        log_dir = os.path.dirname(self.log_file)
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+        # -----------------------------------------------------------------
+        
         self.setup_power_system()
         self.connect_to_plc()
         self.simulation_time = 0
@@ -237,13 +245,24 @@ class PowerSystemHMI:
                     for bus in metrics['buses'][:3]:  # Show first 3 buses
                         print(f"   {bus['name']}: {bus['voltage_actual']:.1f} kV ({bus['voltage_pu']:.3f} pu)")
                     
-                    # Show line loading if breaker is closed
-                    if metrics['breaker_state'] and metrics['lines']:
-                        critical_line = metrics['lines'][0]
+                    critical_line = next((line for line in metrics['lines'] if line['name'] == "Critical Transmission Line"), None)
+                    
+                    if metrics['breaker_state'] and critical_line:
                         print(f"🔗 Critical Line: {critical_line['p_from_mw']:.2f} MW, {critical_line['loading_percent']:.1f}% loading")
                     
+                    # --- ADDED: Log data for the anomaly detector ---
+                    if critical_line:
+                        timestamp = metrics['timestamp']
+                        loading_percent = critical_line['loading_percent']
+                        with open(self.log_file, "a") as f:
+                            f.write(f"{timestamp},{loading_percent}\n")
+                    # ---------------------------------------------------
+
                     # Save to shared file for web dashboard
-                    with open('/shared_data/scada_data.json', 'w') as f:
+                    # Ensure the directory exists before writing
+                    web_data_path = '/shared_data/scada_data.json'
+                    os.makedirs(os.path.dirname(web_data_path), exist_ok=True)
+                    with open(web_data_path, 'w') as f:
                         json.dump(metrics, f, indent=2)
                 
                 self.simulation_time += 5

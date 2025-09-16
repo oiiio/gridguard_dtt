@@ -53,6 +53,21 @@ services:
       - PYTHONUNBUFFERED=1
     profiles:
       - console  # This service only starts when explicitly requested
+    
+  anomaly_detector:
+    build:
+      context: .
+      dockerfile: Dockerfile.scada # We can reuse the same Dockerfile
+    container_name: anomaly_detector
+    volumes:
+      - .:/usr/src/app
+      - shared_logs:/usr/src/app/logs # Mount the same shared log volume
+    networks:
+      - control_network
+    command: python anomaly_detector.py
+
+volumes:
+  shared_logs:
 
 networks:
   control_network:
