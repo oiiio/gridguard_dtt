@@ -10,6 +10,19 @@ services:
     networks:
       - control_network
 
+  scada_hmi:
+    build:
+      context: .
+      dockerfile: Dockerfile.scada
+    container_name: scada_hmi
+    depends_on:
+      - openplc
+    volumes:
+      - .:/usr/src/app
+    networks:
+      - control_network
+    command: python physical_process.py
+    
 networks:
   control_network:
     driver: bridge
