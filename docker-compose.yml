@@ -10,6 +10,21 @@ services:
     networks:
       - control_network
 
+  scada_dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.scada
+    container_name: scada_dashboard
+    depends_on:
+      - openplc
+    ports:
+      - "5000:5000"  # Web dashboard port
+    volumes:
+      - .:/usr/src/app
+    networks:
+      - control_network
+    command: python web_dashboard.py
+    
   scada_hmi:
     build:
       context: .
@@ -22,7 +37,7 @@ services:
     networks:
       - control_network
     command: python physical_process.py
-    
+
 networks:
   control_network:
     driver: bridge

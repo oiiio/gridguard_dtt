@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GridGuard SCADA Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: #ffffff;
+            min-height: 100vh;
+        }
+
+        .header {
+            background: rgba(0, 0, 0, 0.2);
+            padding: 20px;
+            text-align: center;
+            backdrop-filter: blur(10px);
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+        }
+
+        .status-bar {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-top: 15px;
+            flex-wrap: wrap;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            backdrop-filter: blur(5px);
+        }
+
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .status-connected { background-color: #4CAF50; }
+        .status-disconnected { background-color: #f44336; }
+        .status-warning { background-color: #ff9800; }
+
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.1); opacity: 0.8; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+            padding: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .panel {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 25px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .panel:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px 0 rgba(31, 38, 135, 0.5);
+        }
+
+        .panel h3 {
+            margin-bottom: 20px;
+            color: #ffffff;
+            font-size: 1.4rem;
+            border-bottom: 2px solid rgba(255, 255, 255, 0.3);
+            padding-bottom: 10px;
+        }
+
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .metric {
+            text-align: center;
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+        }
+
+        .metric-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #4CAF50;
+            margin-bottom: 5px;
+        }
+
+        .metric-label {
+            font-size: 0.9rem;
+            color: rgba(255, 255, 255, 0.8);
+        }
+
+        .breaker-control {
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        .breaker-status {
+            font-size: 1.8rem;
+            margin-bottom: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            font-weight: bold;
+        }
+
+        .breaker-closed {
+            background: rgba(76, 175, 80, 0.3);
+            color: #4CAF50;
+        }
+
+        .breaker-open {
+            background: rgba(244, 67, 54, 0.3);
+            color: #f44336;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 25px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: bold;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn-primary {
+            background: linear-gradient(45deg, #2196F3, #21CBF3);
+            color: white;
+        }
+
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+
+        .data-table th,
+        .data-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .data-table th {
+            background: rgba(255, 255, 255, 0.1);
+            font-weight: bold;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+            margin-top: 20px;
+        }
+
+        .log-container {
+            max-height: 200px;
+            overflow-y: auto;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 15px;
+        }
+
+        .log-entry {
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+        }
+
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+
+        .timestamp {
+            color: #64B5F6;
+            margin-right: 10px;
+        }
+
+        .loading {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100px;
+        }
+
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 4px solid #ffffff;
+            width: 40px;
+            height: 40px;
+            animation: spin 2s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        @media (max-width: 768px) {
+            .dashboard {
+                grid-template-columns: 1fr;
+                padding: 10px;
+            }
+            
+            .status-bar {
+                flex-direction: column;
+                align-items: center;
+                gap: 10px;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>⚡ GridGuard SCADA Dashboard</h1>
+        <div class="status-bar">
+            <div class="status-item">
+                <div class="status-indicator" id="plc-indicator"></div>
+                <span>PLC Status: <span id="plc-status">Connecting...</span></span>
+            </div>
+            <div class="status-item">
+                <div class="status-indicator status-connected"></div>
+                <span>Dashboard: Online</span>
+            </div>
+            <div class="status-item">
+                <span>Uptime: <span id="system-uptime">00:00:00</span></span>
+            </div>
+            <div class="status-item">
+                <span>Last Update: <span id="last-update">Never</span></span>
+            </div>
+        </div>
+    </div>
+
+    <div class="dashboard">
+        <!-- System Overview Panel -->
+        <div class="panel">
+            <h3>📊 System Overview</h3>
+            <div class="metric-grid">
+                <div class="metric">
+                    <div class="metric-value" id="total-cycles">0</div>
+                    <div class="metric-label">Total Cycles</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value" id="cycles-per-minute">0</div>
+                    <div class="metric-label">Cycles/Min</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value" id="error-count">0</div>
+                    <div class="metric-label">Error Count</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value" id="connection-attempts">0</div>
+                    <div class="metric-label">PLC Attempts</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Circuit Breaker Control Panel -->
+        <div class="panel">
+            <h3>🔌 Circuit Breaker Control</h3>
+            <div class="breaker-control">
+                <div class="breaker-status" id="breaker-status">
+                    Status: Unknown
+                </div>
+                <button class="btn btn-primary" onclick="toggleBreaker()" id="toggle-btn">
+                    Manual Toggle
+                </button>
+            </div>
+        </div>
+
+        <!-- Grid Status Panel -->
+        <div class="panel">
+            <h3>⚡ Power Grid Status</h3>
+            <div class="loading" id="grid-loading">
+                <div class="spinner"></div>
+            </div>
+            <div id="grid-data" style="display: none;">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Component</th>
+                            <th>Status</th>
+                            <th>Value</th>
+                        </tr>
+                    </thead>
+                    <tbody id="grid-table-body">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Real-time Charts Panel -->
+        <div class="panel">
+            <h3>📈 Real-time Monitoring</h3>
+            <div class="chart-container">
+                <canvas id="powerChart"></canvas>
+            </div>
+        </div>
+
+        <!-- System Logs Panel -->
+        <div class="panel">
+            <h3>📋 System Messages</h3>
+            <div class="log-container" id="log-container">
+                <div class="log-entry">
+                    <span class="timestamp">[System]</span>
+                    <span>Dashboard initialized. Waiting for data...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Network Topology Panel -->
+        <div class="panel">
+            <h3>🔗 Network Topology</h3>
+            <div id="topology-view">
+                <svg width="100%" height="250" style="background: rgba(0,0,0,0.1); border-radius: 8px;">
+                    <!-- Bus 1 (High Voltage) -->
+                    <circle cx="50" cy="50" r="20" fill="#4CAF50" stroke="#ffffff" stroke-width="2"/>
+                    <text x="50" y="55" text-anchor="middle" fill="white" font-size="10">Bus 1</text>
+                    <text x="50" y="80" text-anchor="middle" fill="white" font-size="8">20kV</text>
+                    
+                    <!-- Transformer -->
+                    <rect x="120" y="35" width="30" height="30" fill="#FF9800" stroke="#ffffff" stroke-width="2"/>
+                    <text x="135" y="52" text-anchor="middle" fill="white" font-size="8">T1</text>
+                    
+                    <!-- Bus 2 (Low Voltage) -->
+                    <circle cx="200" cy="50" r="20" fill="#2196F3" stroke="#ffffff" stroke-width="2"/>
+                    <text x="200" y="55" text-anchor="middle" fill="white" font-size="10">Bus 2</text>
+                    <text x="200" y="80" text-anchor="middle" fill="white" font-size="8">0.4kV</text>
+                    
+                    <!-- Circuit Breaker -->
+                    <rect x="250" y="45" width="40" height="10" id="breaker-visual" fill="#4CAF50" stroke="#ffffff" stroke-width="2"/>
+                    <text x="270" y="100" text-anchor="middle" fill="white" font-size="8">Breaker</text>
+                    
+                    <!-- Bus 3 (Load) -->
+                    <circle cx="340" cy="50" r="20" fill="#9C27B0" stroke="#ffffff" stroke-width="2"/>
+                    <text x="340" y="55" text-anchor="middle" fill="white" font-size="10">Bus 3</text>
+                    <text x="340" y="80" text-anchor="middle" fill="white" font-size="8">Load</text>
+                    
+                    <!-- Connections -->
+                    <line x1="70" y1="50" x2="120" y2="50" stroke="#ffffff" stroke-width="3"/>
+                    <line x1="150" y1="50" x2="180" y2="50" stroke="#ffffff" stroke-width="3"/>
+                    <line x1="220" y1="50" x2="250" y2="50" stroke="#ffffff" stroke-width="3"/>
+                    <line x1="290" y1="50" x2="320" y2="50" stroke="#ffffff" stroke-width="3" id="breaker-connection"/>
+                </svg>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // WebSocket connection
+        const socket = io();
+        let powerChart;
+        let chartData = {
+            labels: [],
+            datasets: [{
+                label: 'Power Flow (MW)',
+                data: [],
+                borderColor: '#4CAF50',
+                backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                borderWidth: 3,
+                fill: true
+            }, {
+                label: 'Voltage (pu)',
+                data: [],
+                borderColor: '#2196F3',
+                backgroundColor: 'rgba(33, 150, 243, 0.1)',
+                borderWidth: 3,
+                fill: true
+            }]
+        };
+
+        // Initialize chart
+        function initChart() {
+            const ctx = document.getElementById('powerChart').getContext('2d');
+            powerChart = new Chart(ctx, {
+                type: 'line',
+                data: chartData,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#ffffff'
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#ffffff' },
+                            grid: { color: 'rgba(255, 255, 255, 0.2)' }
+                        },
+                        y: {
+                            ticks: { color: '#ffffff' },
+                            grid: { color: 'rgba(255, 255, 255, 0.2)' }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Update chart with new data
+        function updateChart(data) {
+            const now = new Date().toLocaleTimeString();
+            
+            if (chartData.labels.length > 20) {
+                chartData.labels.shift();
+                chartData.datasets[0].data.shift();
+                chartData.datasets[1].data.shift();
+            }
+            
+            chartData.labels.push(now);
+            
+            // Add power flow data
+            let powerValue = 0;
+            if (data.grid_data && data.grid_data.lines && data.grid_data.lines.power_flow) {
+                const powerFlow = data.grid_data.lines.power_flow.p_from_mw;
+                powerValue = Object.values(powerFlow)[0] || 0;
+            }
+            
+            // Add voltage data
+            let voltageValue = 1.0;
+            if (data.grid_data && data.grid_data.buses && data.grid_data.buses.voltage_data) {
+                const voltages = Object.values(data.grid_data.buses.voltage_data);
+                voltageValue = voltages[0] || 1.0;
+            }
+            
+            chartData.datasets[0].data.push(powerValue);
+            chartData.datasets[1].data.push(voltageValue);
+            
+            powerChart.update();
+        }
+
+        // WebSocket event handlers
+        socket.on('connect', function() {
+            addLogEntry('Connected to dashboard server');
+        });
+
+        socket.on('scada_update', function(data) {
+            updateDashboard(data);
+        });
+
+        socket.on('status', function(data) {
+            if (data.error) {
+                addLogEntry('Error: ' + data.error, 'error');
+            } else if (data.message) {
+                addLogEntry(data.message, 'info');
+            }
+        });
+
+        // Update dashboard with new data
+        function updateDashboard(data) {
+            // Update PLC status
+            const plcIndicator = document.getElementById('plc-indicator');
+            const plcStatus = document.getElementById('plc-status');
+            
+            if (data.plc_status.connected) {
+                plcIndicator.className = 'status-indicator status-connected';
+                plcStatus.textContent = 'Connected';
+            } else {
+                plcIndicator.className = 'status-indicator status-disconnected';
+                plcStatus.textContent = 'Disconnected';
+            }
+
+            // Update system metrics
+            document.getElementById('total-cycles').textContent = data.system_metrics.total_cycles;
+            document.getElementById('cycles-per-minute').textContent = data.system_metrics.cycles_per_minute;
+            document.getElementById('error-count').textContent = data.system_metrics.error_count;
+            document.getElementById('connection-attempts').textContent = data.plc_status.connection_attempts;
+            document.getElementById('system-uptime').textContent = data.system_metrics.uptime_formatted;
+
+            // Update breaker status
+            const breakerStatus = document.getElementById('breaker-status');
+            const breakerVisual = document.getElementById('breaker-visual');
+            const breakerConnection = document.getElementById('breaker-connection');
+            
+            if (data.plc_status.breaker_state) {
+                breakerStatus.textContent = 'CLOSED';
+                breakerStatus.className = 'breaker-status breaker-closed';
+                breakerVisual.setAttribute('fill', '#4CAF50');
+                breakerConnection.setAttribute('stroke', '#4CAF50');
+            } else {
+                breakerStatus.textContent = 'OPEN';
+                breakerStatus.className = 'breaker-status breaker-open';
+                breakerVisual.setAttribute('fill', '#f44336');
+                breakerConnection.setAttribute('stroke', '#f44336');
+            }
+
+            // Update grid data table
+            if (data.grid_data) {
+                document.getElementById('grid-loading').style.display = 'none';
+                document.getElementById('grid-data').style.display = 'block';
+                updateGridTable(data.grid_data);
+            }
+
+            // Update chart
+            updateChart(data);
+
+            // Update last update time
+            document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+        }
+
+        // Update grid data table
+        function updateGridTable(gridData) {
+            const tbody = document.getElementById('grid-table-body');
+            tbody.innerHTML = '';
+
+            // Add breaker status
+            const breakerRow = tbody.insertRow();
+            breakerRow.innerHTML = `
+                <td>Circuit Breaker</td>
+                <td>${gridData.breaker_closed ? '✅ Closed' : '❌ Open'}</td>
+                <td>-</td>
+            `;
+
+            // Add bus count
+            if (gridData.buses) {
+                const busRow = tbody.insertRow();
+                busRow.innerHTML = `
+                    <td>Buses</td>
+                    <td>Active</td>
+                    <td>${gridData.buses.count}</td>
+                `;
+            }
+
+            // Add line loading
+            if (gridData.lines && gridData.lines.loading) {
+                const loading = Object.values(gridData.lines.loading)[0];
+                if (loading !== undefined) {
+                    const lineRow = tbody.insertRow();
+                    lineRow.innerHTML = `
+                        <td>Line Loading</td>
+                        <td>${loading > 80 ? '⚠️ High' : '✅ Normal'}</td>
+                        <td>${loading.toFixed(1)}%</td>
+                    `;
+                }
+            }
+
+            // Add power flow
+            if (gridData.lines && gridData.lines.power_flow && gridData.lines.power_flow.p_from_mw) {
+                const power = Object.values(gridData.lines.power_flow.p_from_mw)[0];
+                if (power !== undefined) {
+                    const powerRow = tbody.insertRow();
+                    powerRow.innerHTML = `
+                        <td>Power Flow</td>
+                        <td>✅ Active</td>
+                        <td>${power.toFixed(3)} MW</td>
+                    `;
+                }
+            }
+        }
+
+        // Add log entry
+        function addLogEntry(message, type = 'info') {
+            const logContainer = document.getElementById('log-container');
+            const timestamp = new Date().toLocaleTimeString();
+            
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log-entry';
+            logEntry.innerHTML = `
+                <span class="timestamp">[${timestamp}]</span>
+                <span>${message}</span>
+            `;
+            
+            logContainer.appendChild(logEntry);
+            logContainer.scrollTop = logContainer.scrollHeight;
+
+            // Keep only last 50 entries
+            while (logContainer.children.length > 50) {
+                logContainer.removeChild(logContainer.firstChild);
+            }
+        }
+
+        // Toggle breaker function
+        function toggleBreaker() {
+            socket.emit('toggle_breaker');
+            addLogEntry('Manual breaker toggle requested');
+        }
+
+        // Initialize dashboard
+        document.addEventListener('DOMContentLoaded', function() {
+            initChart();
+            addLogEntry('Dashboard initialized');
+        });
+    </script>
+</body>
+</html>
