@@ -18,7 +18,7 @@ services:
     depends_on:
       - openplc
     ports:
-      - "5000:5000"  # Web dashboard port
+      - "5001:5000"  # Web dashboard port (external:internal)
     volumes:
       - .:/usr/src/app
     networks:

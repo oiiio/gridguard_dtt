@@ -2,6 +2,7 @@
 SCADA Web Dashboard - Real-time monitoring interface
 """
 import pandapower as pp
+import pandas as pd
 from pymodbus.client import ModbusTcpClient
 import time
 import threading
@@ -133,14 +134,14 @@ class SCADASystem:
                 'breaker_closed': bool(self.plc_status['breaker_state']),
                 'buses': {
                     'count': len(self.net.bus),
-                    'voltage_data': self.net.res_bus.vm_pu.to_dict() if hasattr(self.net, 'res_bus') else {}
+                    'voltage_data': {str(k): float(v) if not pd.isna(v) else 1.0 for k, v in self.net.res_bus.vm_pu.to_dict().items()} if hasattr(self.net, 'res_bus') else {}
                 },
                 'lines': {
                     'count': len(self.net.line),
-                    'loading': self.net.res_line.loading_percent.to_dict() if hasattr(self.net, 'res_line') else {},
+                    'loading': {str(k): float(v) if not pd.isna(v) else 0.0 for k, v in self.net.res_line.loading_percent.to_dict().items()} if hasattr(self.net, 'res_line') else {},
                     'power_flow': {
-                        'p_from_mw': self.net.res_line.p_from_mw.to_dict() if hasattr(self.net, 'res_line') else {},
-                        'q_from_mvar': self.net.res_line.q_from_mvar.to_dict() if hasattr(self.net, 'res_line') else {}
+                        'p_from_mw': {str(k): float(v) if not pd.isna(v) else 0.0 for k, v in self.net.res_line.p_from_mw.to_dict().items()} if hasattr(self.net, 'res_line') else {},
+                        'q_from_mvar': {str(k): float(v) if not pd.isna(v) else 0.0 for k, v in self.net.res_line.q_from_mvar.to_dict().items()} if hasattr(self.net, 'res_line') else {}
                     }
                 },
                 'switches': self.net.switch.to_dict('records'),
@@ -189,49 +190,71 @@ def scada_worker():
     
     logger.info("SCADA worker thread starting...")
     
-    # Initial connection attempt
-    max_retries = 10
-    retry_count = 0
-    
-    while retry_count < max_retries and not scada_system.plc_status['connected']:
-        logger.info(f"Attempting to connect to PLC (attempt {retry_count + 1}/{max_retries})")
-        if scada_system.connect_to_plc():
-            break
-        time.sleep(3)
-        retry_count += 1
-    
-    if not scada_system.plc_status['connected']:
-        logger.warning("Could not establish PLC connection, running in simulation mode")
-    
-    scada_system.running = True
-    
-    # Main SCADA loop
-    while scada_system.running:
-        try:
-            # Read PLC data (or simulate if not connected)
-            if scada_system.plc_status['connected']:
-                success = scada_system.read_plc_data()
-                if not success:
-                    # Try to reconnect
-                    logger.info("Attempting to reconnect to PLC...")
-                    scada_system.connect_to_plc()
-            else:
-                # Simulation mode - toggle breaker state every 30 seconds
-                if scada_system.system_metrics['total_cycles'] % 6 == 0:
-                    scada_system.plc_status['breaker_state'] = not scada_system.plc_status['breaker_state']
-                    logger.info(f"Simulation mode: Breaker state = {scada_system.plc_status['breaker_state']}")
-            
-            # Run power flow calculation
-            scada_system.run_power_flow()
-            
-            # Emit real-time data to web clients
-            socketio.emit('scada_update', scada_system.get_system_status())
-            
-        except Exception as e:
-            logger.error(f"Error in SCADA worker: {e}")
-            scada_system.system_metrics['error_count'] += 1
+    try:
+        # Initial connection attempt
+        max_retries = 10
+        retry_count = 0
         
-        time.sleep(5)  # 5-second update cycle
+        while retry_count < max_retries and not scada_system.plc_status['connected']:
+            logger.info(f"Attempting to connect to PLC (attempt {retry_count + 1}/{max_retries})")
+            if scada_system.connect_to_plc():
+                break
+            time.sleep(3)
+            retry_count += 1
+        
+        if not scada_system.plc_status['connected']:
+            logger.warning("Could not establish PLC connection, running in simulation mode")
+        
+        scada_system.running = True
+        
+        # Main SCADA loop
+        cycle_count = 0
+        while scada_system.running:
+            try:
+                cycle_count += 1
+                logger.info(f"SCADA cycle {cycle_count} starting...")
+                
+                # Read PLC data (or simulate if not connected)
+                if scada_system.plc_status['connected']:
+                    success = scada_system.read_plc_data()
+                    if not success:
+                        # Try to reconnect
+                        logger.info("Attempting to reconnect to PLC...")
+                        scada_system.connect_to_plc()
+                else:
+                    # Simulation mode - toggle breaker state every 30 seconds (6 cycles)
+                    if cycle_count % 6 == 0:
+                        scada_system.plc_status['breaker_state'] = not scada_system.plc_status['breaker_state']
+                        logger.info(f"Simulation mode: Breaker state = {scada_system.plc_status['breaker_state']}")
+                
+                # Run power flow calculation
+                logger.info("Running power flow calculation...")
+                power_flow_success = scada_system.run_power_flow()
+                logger.info(f"Power flow calculation: {'SUCCESS' if power_flow_success else 'FAILED'}")
+                
+                # Get system status
+                logger.info("Getting system status...")
+                system_status = scada_system.get_system_status()
+                logger.info(f"System status retrieved: PLC={system_status['plc_status']['connected']}, Cycles={system_status['system_metrics']['total_cycles']}")
+                
+                # Emit real-time data to web clients
+                logger.info("Emitting data to WebSocket clients...")
+                socketio.emit('scada_update', system_status)
+                logger.info("Data emitted successfully")
+                
+            except Exception as e:
+                logger.error(f"Error in SCADA worker cycle {cycle_count}: {e}")
+                logger.error(f"Exception details: {type(e).__name__}: {str(e)}")
+                scada_system.system_metrics['error_count'] += 1
+            
+            logger.info(f"SCADA cycle {cycle_count} complete, sleeping for 5 seconds...")
+            time.sleep(5)  # 5-second update cycle
+            
+    except Exception as e:
+        logger.error(f"Fatal error in SCADA worker thread: {e}")
+        logger.error(f"Exception details: {type(e).__name__}: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
 
 @app.route('/')
 def index():
