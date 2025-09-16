@@ -10,35 +10,31 @@ services:
     networks:
       - control_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-
-  scada_dashboard:
-    build:
-      context: .
-      dockerfile: Dockerfile.scada
-    container_name: scada_dashboard
-    depends_on:
-      openplc:
-        condition: service_healthy
-    ports:
-      - "5001:5000"  # Web dashboard port (external:internal)
-    volumes:
-      - .:/usr/src/app
-    networks:
-      - control_network
-    command: python web_dashboard.py
-    environment:
-      - PYTHONUNBUFFERED=1
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/login"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 15s
+
+  scada_dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: scada_dashboard
+    container_name: scada_dashboard
+    volumes:
+      - /tmp:/shared_data
+    ports:
+      - "5001:5001"
+    environment:
+      - OPENPLC_HOST=openplc_runtime
+      - OPENPLC_PORT=502
+    # depends_on:
+    #   openplc:
+    #     condition: service_healthy
+    networks:
+      - control_network
+    command: python web_dashboard.py
     
   scada_hmi:
     build:
@@ -46,13 +42,13 @@ services:
       dockerfile: Dockerfile.scada
     container_name: scada_hmi
     depends_on:
-      openplc:
-        condition: service_healthy
+      - openplc
     volumes:
       - .:/usr/src/app
+      - /tmp:/shared_data  # Share data between containers
     networks:
       - control_network
-    command: python physical_process.py
+    command: python physical_process_enhanced.py
     environment:
       - PYTHONUNBUFFERED=1
     profiles:

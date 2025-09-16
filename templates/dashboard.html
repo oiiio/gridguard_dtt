@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https: data: blob:; connect-src 'self' ws: wss:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:;">
     <title>GridGuard SCADA Dashboard</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -484,6 +485,7 @@
         });
 
         socket.on('scada_update', function(data) {
+            console.log('Received SCADA update:', data);
             updateDashboard(data);
         });
 
@@ -497,6 +499,8 @@
 
         // Update dashboard with new data
         function updateDashboard(data) {
+            console.log('Updating dashboard with data:', data);
+            
             // Update PLC status
             const plcIndicator = document.getElementById('plc-indicator');
             const plcStatus = document.getElementById('plc-status');

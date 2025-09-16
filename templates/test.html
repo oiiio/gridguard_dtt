@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Simple SCADA Test</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+</head>
+<body>
+    <h1>SCADA Dashboard Test</h1>
+    <div id="status">Loading...</div>
+    <div id="cycles">Cycles: 0</div>
+    <div id="plc">PLC: Unknown</div>
+    <div id="data">Data: None</div>
+    <div id="logs"></div>
+
+    <script>
+        const socket = io();
+        
+        function log(message) {
+            const logs = document.getElementById('logs');
+            logs.innerHTML += '<div>' + new Date().toLocaleTimeString() + ': ' + message + '</div>';
+        }
+        
+        socket.on('connect', function() {
+            log('Connected to server');
+            document.getElementById('status').textContent = 'Connected';
+        });
+        
+        socket.on('disconnect', function() {
+            log('Disconnected from server');
+            document.getElementById('status').textContent = 'Disconnected';
+        });
+        
+        socket.on('scada_update', function(data) {
+            log('Received update: cycles=' + data.system_metrics.total_cycles);
+            document.getElementById('cycles').textContent = 'Cycles: ' + data.system_metrics.total_cycles;
+            document.getElementById('plc').textContent = 'PLC: ' + (data.plc_status.connected ? 'Connected' : 'Disconnected');
+            document.getElementById('data').textContent = 'Data: ' + JSON.stringify(data.simulation ? 'Has Simulation' : 'No Simulation');
+        });
+    </script>
+</body>
+</html>

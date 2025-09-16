@@ -3,12 +3,13 @@ SCADA Web Dashboard - Real-time monitoring interface
 """
 import pandapower as pp
 import pandas as pd
+import numpy as np
 from pymodbus.client import ModbusTcpClient
 import time
 import threading
 import json
 from datetime import datetime
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
 import logging
 
@@ -16,9 +17,21 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Connection management
+active_connections = set()
+MAX_CONNECTIONS = 5  # Limit concurrent connections
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'scada_secret_key_2025'
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", logger=True, engineio_logger=True, 
+                   transports=['websocket', 'polling'], 
+                   allow_upgrades=True)
+
+# Add CSP headers to allow JavaScript execution
+@app.after_request
+def after_request(response):
+    response.headers['Content-Security-Policy'] = "default-src 'self' 'unsafe-inline' 'unsafe-eval' https: data: blob:; connect-src 'self' ws: wss:;"
+    return response
 
 class SCADASystem:
     def __init__(self):
@@ -159,9 +172,52 @@ class SCADASystem:
             self.system_metrics['error_count'] += 1
             return False
 
+    def get_simulation_data(self):
+        """Get enhanced simulation data from file"""
+        try:
+            with open('/shared_data/scada_data.json', 'r') as f:
+                data = json.load(f)
+                return data
+        except FileNotFoundError:
+            # Return dynamic fallback data if file doesn't exist
+            import time
+            t = time.time()
+            return {
+                'timestamp': datetime.now().isoformat(),
+                'breaker_state': self.plc_status.get('breaker_state', False),
+                'breaker_status': 'CLOSED' if self.plc_status.get('breaker_state', False) else 'OPEN',
+                'system_frequency': 60.0 + 0.05 * np.sin(t * 0.1),
+                'buses': [
+                    {'name': 'HV Substation', 'voltage_kv': 138.0, 'voltage_pu': 1.02 + 0.01*np.sin(t*0.05), 'voltage_actual': 138.0 * (1.02 + 0.01*np.sin(t*0.05))},
+                    {'name': 'MV Bus 1', 'voltage_kv': 13.8, 'voltage_pu': 0.98 + 0.015*np.sin(t*0.07), 'voltage_actual': 13.8 * (0.98 + 0.015*np.sin(t*0.07))},
+                    {'name': 'MV Bus 2', 'voltage_kv': 13.8, 'voltage_pu': 0.95 + 0.02*np.sin(t*0.03), 'voltage_actual': 13.8 * (0.95 + 0.02*np.sin(t*0.03))}
+                ],
+                'loads': [
+                    {'name': 'Industrial Load', 'bus': 'Load Center 1', 'p_mw': 0.8 + 0.2*np.sin(t*0.02), 'q_mvar': 0.3 + 0.1*np.sin(t*0.02)},
+                    {'name': 'Commercial Load', 'bus': 'Load Center 2', 'p_mw': 0.5 + 0.3*np.sin(t*0.04), 'q_mvar': 0.2 + 0.12*np.sin(t*0.04)},
+                    {'name': 'Residential Feeder', 'bus': 'MV Bus 2', 'p_mw': 2.1 + 0.4*np.sin(t*0.01), 'q_mvar': 0.8 + 0.15*np.sin(t*0.01)}
+                ],
+                'generators': [
+                    {'name': 'Distributed Generator', 'bus': 'MV Bus 2', 'p_mw': 1.5 + 0.2*np.sin(t*0.08), 'q_mvar': 0.3 + 0.1*np.cos(t*0.08)}
+                ],
+                'lines': [
+                    {'name': 'Critical Transmission Line', 'from_bus': 'MV Bus 1', 'to_bus': 'MV Bus 2', 'p_from_mw': 1.2 + 0.3*np.sin(t*0.06), 'loading_percent': 45 + 15*np.sin(t*0.06), 'current_ka': 0.08 + 0.02*np.sin(t*0.06)}
+                ],
+                'power_flow': {
+                    'total_load_mw': 3.4 + 0.6*np.sin(t*0.02),
+                    'total_generation_mw': 1.5 + 0.2*np.sin(t*0.08),
+                    'grid_import_mw': 1.9 + 0.4*np.sin(t*0.03),
+                    'system_losses_mw': 0.05 + 0.02*np.sin(t*0.1)
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error reading simulation data: {e}")
+            return None
+
     def get_system_status(self):
         """Get current system status for web interface"""
         uptime = datetime.now() - self.system_metrics['uptime']
+        sim_data = self.get_simulation_data()
         
         return {
             'plc_status': {
@@ -178,7 +234,8 @@ class SCADASystem:
                 'error_count': self.system_metrics['error_count'],
                 'cycles_per_minute': round(self.system_metrics['total_cycles'] / max(uptime.total_seconds() / 60, 1), 2)
             },
-            'grid_data': self.grid_data
+            'grid_data': self.grid_data,
+            'simulation': sim_data
         }
 
 # Global SCADA system instance
@@ -261,10 +318,22 @@ def index():
     """Main dashboard page"""
     return render_template('dashboard.html')
 
+@app.route('/test')
+def test():
+    """Simple test page"""
+    return render_template('test.html')
+
 @app.route('/api/status')
 def api_status():
     """REST API endpoint for system status"""
-    return jsonify(scada_system.get_system_status())
+    status = scada_system.get_system_status()
+    # Add connection info
+    status['connections'] = {
+        'active_count': len(active_connections),
+        'max_allowed': MAX_CONNECTIONS,
+        'active_clients': list(active_connections)
+    }
+    return jsonify(status)
 
 @app.route('/api/grid-data')
 def api_grid_data():
@@ -272,32 +341,60 @@ def api_grid_data():
     return jsonify(scada_system.grid_data)
 
 @socketio.on('connect')
-def handle_connect():
-    """Handle client connection"""
-    logger.info('Client connected to WebSocket')
-    emit('scada_update', scada_system.get_system_status())
+def handle_connect(auth):
+    """Handle client connection with connection limiting"""
+    client_id = request.sid
+    
+    # Check if we've exceeded the connection limit
+    if len(active_connections) >= MAX_CONNECTIONS:
+        logger.warning(f'Connection limit ({MAX_CONNECTIONS}) exceeded. Rejecting client: {client_id}')
+        emit('connection_rejected', {'reason': 'Server at capacity'})
+        return False  # Reject the connection
+    
+    # Add to active connections
+    active_connections.add(client_id)
+    logger.info(f'Client connected to WebSocket: {client_id} (Total connections: {len(active_connections)})')
+    
+    try:
+        emit('scada_update', scada_system.get_system_status())
+        logger.info(f'Initial data sent to client: {client_id}')
+    except Exception as e:
+        logger.error(f'Error sending initial data to client {client_id}: {e}')
+        # Remove from active connections on error
+        active_connections.discard(client_id)
 
 @socketio.on('disconnect')
 def handle_disconnect():
     """Handle client disconnection"""
-    logger.info('Client disconnected from WebSocket')
+    client_id = request.sid
+    active_connections.discard(client_id)  # Remove from active connections
+    logger.info(f'Client disconnected from WebSocket: {client_id} (Total connections: {len(active_connections)})')
 
 @socketio.on('toggle_breaker')
 def handle_toggle_breaker():
     """Handle manual breaker toggle from web interface"""
     if scada_system.plc_status['connected'] and scada_system.client:
         try:
-            # In a real system, you'd write to the PLC input that controls the breaker
-            # For demonstration, we'll just toggle the local state
-            new_state = not scada_system.plc_status['breaker_state']
-            logger.info(f"Manual breaker toggle requested: {new_state}")
+            # Get current breaker state
+            current_state = scada_system.plc_status.get('breaker_state', False)
+            new_state = not current_state
             
-            # Note: In a real implementation, you'd write to PLC inputs here
-            # result = scada_system.client.write_coil(address=0, value=new_state)
+            logger.info(f"Manual breaker toggle requested: {current_state} -> {new_state}")
             
-            emit('status', {'message': f'Breaker toggle requested: {"CLOSED" if new_state else "OPEN"}'})
+            # Write to PLC output to set new state
+            result = scada_system.client.write_coil(address=0, value=new_state)
+            
+            if not result.isError():
+                scada_system.plc_status['breaker_state'] = new_state
+                emit('status', {'message': f'Breaker {"CLOSED" if new_state else "OPEN"}'})
+                logger.info(f"Successfully wrote {new_state} to PLC address 0")
+            else:
+                emit('status', {'error': f'Failed to write to PLC: {result}'})
+                logger.error(f"PLC write failed: {result}")
+                
         except Exception as e:
             emit('status', {'error': f'Failed to toggle breaker: {str(e)}'})
+            logger.error(f"Breaker toggle error: {e}")
     else:
         emit('status', {'error': 'PLC not connected'})
 
@@ -306,5 +403,5 @@ if __name__ == '__main__':
     worker_thread = threading.Thread(target=scada_worker, daemon=True)
     worker_thread.start()
     
-    logger.info("Starting SCADA Web Dashboard on http://0.0.0.0:5000")
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+    logger.info("Starting SCADA Web Dashboard on http://0.0.0.0:5001")
+    socketio.run(app, host='0.0.0.0', port=5001, debug=False)
