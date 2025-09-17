@@ -1,23 +1,29 @@
+#!/usr/bin/env python3
+"""
+Standalone test version of the physical process simulator.
+This version runs without Docker and can be used for testing and debugging.
+"""
+
 import pandapower as pp
-from pymodbus.client import ModbusTcpClient
 import time
 import numpy as np
 import json
 from datetime import datetime
-import os # <-- ADDED: To handle file paths
+import os
 
-class PowerSystemHMI:
-    def __init__(self):
-        # --- ADDED: Define log file path and ensure directory exists ---
-        self.log_file = "/usr/src/app/logs/power_flow.log"
-        log_dir = os.path.dirname(self.log_file)
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-        # -----------------------------------------------------------------
+class PowerSystemHMI_Standalone:
+    def __init__(self, log_to_file=True):
+        self.log_to_file = log_to_file
+        if self.log_to_file:
+            # Use local directory for testing
+            self.log_file = "./logs/power_flow.log"
+            log_dir = os.path.dirname(self.log_file)
+            if not os.path.exists(log_dir):
+                os.makedirs(log_dir)
         
         self.setup_power_system()
-        self.connect_to_plc()
         self.simulation_time = 0
+        print("✅ Standalone Power System HMI initialized successfully!")
         
     def setup_power_system(self):
         """Create a realistic power grid model with multiple measurement points"""
@@ -66,45 +72,11 @@ class PowerSystemHMI:
         self.breaker_switch = pp.create_switch(self.net, bus=self.bus_mv1, element=self.critical_line, 
                                              et="l", closed=True, name="PLC Circuit Breaker")
     
-    def connect_to_plc(self):
-        """Connect to OpenPLC Modbus server"""
-        self.client = ModbusTcpClient('openplc', port=502)
-        
-        print("--- Connecting to OpenPLC Modbus Server ---")
-        max_retries = 15
-        for attempt in range(max_retries):
-            try:
-                print(f"Connection attempt {attempt + 1}/{max_retries}...")
-                if self.client.connect():
-                    print("✅ Connected to OpenPLC successfully!")
-                    return
-            except Exception as e:
-                print(f"Connection attempt failed: {e}")
-            
-            if attempt < max_retries - 1:
-                time.sleep(2)
-        
-        print("❌ Could not connect to OpenPLC after multiple attempts")
-        print("Continuing with simulation mode...")
-        self.client = None
-    
-    def get_plc_breaker_state(self):
-        """Read breaker state from PLC"""
-        if not self.client:
-            # Simulation mode - create dynamic breaker behavior for demo
-            # Breaker cycles: closed for 30s, open for 10s
-            cycle_time = self.simulation_time % 40
-            return cycle_time < 30
-            
-        try:
-            result = self.client.read_coils(address=0, count=1)
-            if result.isError():
-                print(f"PLC read error: {result}")
-                return True  # Default to closed
-            return result.bits[0]
-        except Exception as e:
-            print(f"PLC communication error: {e}")
-            return True
+    def get_simulated_breaker_state(self):
+        """Simulate breaker state for standalone testing"""
+        # Breaker cycles: closed for 30s, open for 10s
+        cycle_time = self.simulation_time % 40
+        return cycle_time < 30
     
     def update_dynamic_loads(self):
         """Update loads with realistic time-varying patterns"""
@@ -143,18 +115,18 @@ class PowerSystemHMI:
             pp.runpp(self.net, algorithm="nr", max_iteration=20, numba=False)
             return True
         except Exception as e:
-            print(f"Power flow convergence error: {e}")
+            print(f"❌ Power flow convergence error: {e}")
             return False
     
     def get_system_metrics(self):
         """Extract key system metrics for SCADA display"""
-        breaker_state = self.get_plc_breaker_state()
+        breaker_state = self.get_simulated_breaker_state()
         self.net.switch.loc[0, 'closed'] = breaker_state
         
         # Update dynamic loads
         self.update_dynamic_loads()
         
-        # Run power flow with numba disabled to avoid warnings
+        # Run power flow
         converged = self.run_power_flow()
         
         if not converged:
@@ -217,7 +189,8 @@ class PowerSystemHMI:
                     'p_from_mw': p_from_mw,
                     'q_from_mvar': q_from_mvar,
                     'loading_percent': loading_percent,
-                    'current_ka': current_ka
+                    'current_ka': current_ka,
+                    'max_current_ka': self.net.line.loc[idx, 'max_i_ka']
                 }
                 metrics['lines'].append(line_data)
         
@@ -255,12 +228,13 @@ class PowerSystemHMI:
         
         return metrics
     
-    def run_simulation(self):
+    def run_simulation(self, duration=60, update_interval=5):
         """Main simulation loop"""
-        print("🚀 GridGuard SCADA Simulation Started")
-        print("=" * 50)
+        print("🚀 GridGuard SCADA Simulation Started (Standalone)")
+        print("=" * 60)
+        end_time = self.simulation_time + duration
         
-        while True:
+        while self.simulation_time < end_time:
             try:
                 # Get system metrics
                 metrics = self.get_system_metrics()
@@ -287,37 +261,48 @@ class PowerSystemHMI:
                     else:
                         print(f"🔗 Critical Line: DISCONNECTED (breaker open)")
                     
-                    # --- ADDED: Log data for the anomaly detector ---
-                    critical_line = next((line for line in metrics['lines'] if line['name'] == "Critical Transmission Line"), None)
-                    if critical_line and not np.isnan(critical_line['loading_percent']):
-                        timestamp = metrics['timestamp']
-                        loading_percent = critical_line['loading_percent']
-                        with open(self.log_file, "a") as f:
-                            f.write(f"{timestamp},{loading_percent}\n")
-                    elif critical_line and np.isnan(critical_line['loading_percent']):
-                        # Log zero when breaker is open (no loading)
-                        timestamp = metrics['timestamp']
-                        with open(self.log_file, "a") as f:
-                            f.write(f"{timestamp},0.0\n")
-                    # ---------------------------------------------------
-
-                    # Save to shared file for web dashboard
-                    # Ensure the directory exists before writing
-                    web_data_path = '/shared_data/scada_data.json'
-                    os.makedirs(os.path.dirname(web_data_path), exist_ok=True)
-                    with open(web_data_path, 'w') as f:
-                        json.dump(metrics, f, indent=2)
+                    # Log data for anomaly detection
+                    if self.log_to_file and critical_line:
+                        if not np.isnan(critical_line['loading_percent']):
+                            timestamp = metrics['timestamp']
+                            loading_percent = critical_line['loading_percent']
+                            with open(self.log_file, "a") as f:
+                                f.write(f"{timestamp},{loading_percent}\n")
+                        else:
+                            # Log zero when breaker is open (no loading)
+                            timestamp = metrics['timestamp']
+                            with open(self.log_file, "a") as f:
+                                f.write(f"{timestamp},0.0\n")
+                else:
+                    print("❌ Failed to get system metrics")
                 
-                self.simulation_time += 5
-                time.sleep(5)  # Update every 5 seconds
+                self.simulation_time += update_interval
+                time.sleep(update_interval)
                 
             except KeyboardInterrupt:
-                print("\n🛑 Simulation stopped by user")
+                print("\n👋 Simulation stopped by user")
                 break
             except Exception as e:
                 print(f"❌ Simulation error: {e}")
-                time.sleep(5)
+                break
+        
+        print("\n🏁 Simulation completed")
+        if self.log_to_file and os.path.exists(self.log_file):
+            print(f"📁 Log file saved to: {self.log_file}")
+
+def main():
+    """Run the standalone simulation"""
+    try:
+        # Create and run the simulation
+        hmi = PowerSystemHMI_Standalone(log_to_file=True)
+        
+        print("\nStarting 60-second simulation with breaker cycling...")
+        print("Press Ctrl+C to stop early\n")
+        
+        hmi.run_simulation(duration=60, update_interval=5)
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
 
 if __name__ == "__main__":
-    hmi = PowerSystemHMI()
-    hmi.run_simulation()
+    main()

@@ -1,23 +1,37 @@
+#!/usr/bin/env python3
+"""
+Standalone test version of the physical process simulator.
+This version runs without Dock    def run_power_flow(self):
+        """Run power flow analysis and return results"""
+        try:
+            # Disable numba to avoid warnings
+            pp.runpp(self.net, algorithm="nr", max_iteration=20, numba=False)
+            return True
+        except Exception as e:
+            print(f"Power flow convergence error: {e}")
+            return Falsean be used for testing and debugging.
+"""
+
 import pandapower as pp
-from pymodbus.client import ModbusTcpClient
 import time
 import numpy as np
 import json
 from datetime import datetime
-import os # <-- ADDED: To handle file paths
+import os
 
-class PowerSystemHMI:
-    def __init__(self):
-        # --- ADDED: Define log file path and ensure directory exists ---
-        self.log_file = "/usr/src/app/logs/power_flow.log"
-        log_dir = os.path.dirname(self.log_file)
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-        # -----------------------------------------------------------------
+class PowerSystemHMI_Standalone:
+    def __init__(self, log_to_file=True):
+        self.log_to_file = log_to_file
+        if self.log_to_file:
+            # Use local directory for testing
+            self.log_file = "./logs/power_flow.log"
+            log_dir = os.path.dirname(self.log_file)
+            if not os.path.exists(log_dir):
+                os.makedirs(log_dir)
         
         self.setup_power_system()
-        self.connect_to_plc()
         self.simulation_time = 0
+        print("✅ Standalone Power System HMI initialized successfully!")
         
     def setup_power_system(self):
         """Create a realistic power grid model with multiple measurement points"""
@@ -65,50 +79,22 @@ class PowerSystemHMI:
         # PLC-controlled circuit breaker
         self.breaker_switch = pp.create_switch(self.net, bus=self.bus_mv1, element=self.critical_line, 
                                              et="l", closed=True, name="PLC Circuit Breaker")
-    
-    def connect_to_plc(self):
-        """Connect to OpenPLC Modbus server"""
-        self.client = ModbusTcpClient('openplc', port=502)
         
-        print("--- Connecting to OpenPLC Modbus Server ---")
-        max_retries = 15
-        for attempt in range(max_retries):
-            try:
-                print(f"Connection attempt {attempt + 1}/{max_retries}...")
-                if self.client.connect():
-                    print("✅ Connected to OpenPLC successfully!")
-                    return
-            except Exception as e:
-                print(f"Connection attempt failed: {e}")
-            
-            if attempt < max_retries - 1:
-                time.sleep(2)
-        
-        print("❌ Could not connect to OpenPLC after multiple attempts")
-        print("Continuing with simulation mode...")
-        self.client = None
+        print("✅ Power system network created successfully!")
+        print(f"   - Buses: {len(self.net.bus)}")
+        print(f"   - Lines: {len(self.net.line)}")
+        print(f"   - Loads: {len(self.net.load)}")
+        print(f"   - Generators: {len(self.net.gen)}")
     
-    def get_plc_breaker_state(self):
-        """Read breaker state from PLC"""
-        if not self.client:
-            # Simulation mode - create dynamic breaker behavior for demo
-            # Breaker cycles: closed for 30s, open for 10s
-            cycle_time = self.simulation_time % 40
-            return cycle_time < 30
-            
-        try:
-            result = self.client.read_coils(address=0, count=1)
-            if result.isError():
-                print(f"PLC read error: {result}")
-                return True  # Default to closed
-            return result.bits[0]
-        except Exception as e:
-            print(f"PLC communication error: {e}")
-            return True
+    def get_simulated_breaker_state(self):
+        """Simulate breaker state without PLC (for testing)"""
+        # Breaker cycles: closed for 30s, open for 10s
+        cycle_time = self.simulation_time % 40
+        return cycle_time < 30
     
     def update_dynamic_loads(self):
         """Update loads with realistic time-varying patterns"""
-        # Simulate daily load patterns
+        # Simulate daily load patterns (accelerated for testing)
         hour_of_day = (self.simulation_time / 10) % 24  # 10 seconds = 1 hour for demo
         
         # Industrial load (more stable, peak during work hours)
@@ -139,25 +125,37 @@ class PowerSystemHMI:
     def run_power_flow(self):
         """Run power flow analysis and return results"""
         try:
-            # Disable numba to avoid warnings
-            pp.runpp(self.net, algorithm="nr", max_iteration=20, numba=False)
+            pp.runpp(self.net, algorithm="nr", max_iteration=20)
             return True
         except Exception as e:
-            print(f"Power flow convergence error: {e}")
+            print(f"❌ Power flow convergence error: {e}")
             return False
+    
+    def debug_network_state(self):
+        """Debug function to check network state"""
+        print("\n🔍 Network Debug Information:")
+        print(f"   Switches state: {self.net.switch}")
+        print(f"   Lines in service: {self.net.line['in_service'].tolist()}")
+        if hasattr(self.net, 'res_line') and not self.net.res_line.empty:
+            print(f"   Line results available: {len(self.net.res_line)} lines")
+            print(f"   Loading percentages: {self.net.res_line['loading_percent'].tolist()}")
+        else:
+            print("   No line results available - power flow may have failed")
     
     def get_system_metrics(self):
         """Extract key system metrics for SCADA display"""
-        breaker_state = self.get_plc_breaker_state()
+        breaker_state = self.get_simulated_breaker_state()
         self.net.switch.loc[0, 'closed'] = breaker_state
         
         # Update dynamic loads
         self.update_dynamic_loads()
         
-        # Run power flow with numba disabled to avoid warnings
+        # Run power flow
         converged = self.run_power_flow()
         
         if not converged:
+            print("❌ Power flow did not converge!")
+            self.debug_network_state()
             return None
             
         # Extract metrics
@@ -175,21 +173,12 @@ class PowerSystemHMI:
         
         # Bus voltages
         for idx, bus in self.net.bus.iterrows():
-            vm_pu = self.net.res_bus.loc[idx, 'vm_pu']
-            va_degree = self.net.res_bus.loc[idx, 'va_degree']
-            
-            # Handle NaN values for isolated buses
-            if np.isnan(vm_pu):
-                vm_pu = 0.0
-            if np.isnan(va_degree):
-                va_degree = 0.0
-                
             bus_data = {
                 'name': bus['name'],
                 'voltage_kv': bus['vn_kv'],
-                'voltage_pu': vm_pu,
-                'angle_deg': va_degree,
-                'voltage_actual': vm_pu * bus['vn_kv']
+                'voltage_pu': self.net.res_bus.loc[idx, 'vm_pu'],
+                'angle_deg': self.net.res_bus.loc[idx, 'va_degree'],
+                'voltage_actual': self.net.res_bus.loc[idx, 'vm_pu'] * bus['vn_kv']
             }
             metrics['buses'].append(bus_data)
         
@@ -217,7 +206,8 @@ class PowerSystemHMI:
                     'p_from_mw': p_from_mw,
                     'q_from_mvar': q_from_mvar,
                     'loading_percent': loading_percent,
-                    'current_ka': current_ka
+                    'current_ka': current_ka,
+                    'max_current_ka': self.net.line.loc[idx, 'max_i_ka']
                 }
                 metrics['lines'].append(line_data)
         
@@ -255,12 +245,14 @@ class PowerSystemHMI:
         
         return metrics
     
-    def run_simulation(self):
-        """Main simulation loop"""
-        print("🚀 GridGuard SCADA Simulation Started")
+    def run_test_simulation(self, duration_seconds=60, update_interval=5):
+        """Run simulation for testing purposes"""
+        print(f"🚀 Starting {duration_seconds}s test simulation")
         print("=" * 50)
         
-        while True:
+        start_time = time.time()
+        
+        while (time.time() - start_time) < duration_seconds:
             try:
                 # Get system metrics
                 metrics = self.get_system_metrics()
@@ -275,49 +267,66 @@ class PowerSystemHMI:
                     
                     # Show voltage levels
                     for bus in metrics['buses'][:3]:  # Show first 3 buses
-                        if bus['voltage_pu'] == 0.0:
-                            print(f"   {bus['name']}: ISOLATED (breaker open)")
+                        print(f"   {bus['name']}: {bus['voltage_actual']:.1f} kV ({bus['voltage_pu']:.3f} pu)")
+                    
+                    # Show line information
+                    for line in metrics['lines']:
+                        print(f"🔗 {line['name']}: {line['p_from_mw']:.2f} MW, {line['loading_percent']:.1f}% loading")
+                        print(f"   Current: {line['current_ka']:.3f} kA / {line['max_current_ka']:.3f} kA max")
+                    
+                    # Log data for anomaly detector
+                    if self.log_to_file and critical_line:
+                        if not np.isnan(critical_line['loading_percent']):
+                            timestamp = metrics['timestamp']
+                            loading_percent = critical_line['loading_percent']
+                            with open(self.log_file, "a") as f:
+                                f.write(f"{timestamp},{loading_percent}\n")
                         else:
-                            print(f"   {bus['name']}: {bus['voltage_actual']:.1f} kV ({bus['voltage_pu']:.3f} pu)")
-                    
-                    critical_line = next((line for line in metrics['lines'] if line['name'] == "Critical Transmission Line"), None)
-                    
-                    if metrics['breaker_state'] and critical_line:
-                        print(f"🔗 Critical Line: {critical_line['p_from_mw']:.2f} MW, {critical_line['loading_percent']:.1f}% loading")
-                    else:
-                        print(f"🔗 Critical Line: DISCONNECTED (breaker open)")
-                    
-                    # --- ADDED: Log data for the anomaly detector ---
-                    critical_line = next((line for line in metrics['lines'] if line['name'] == "Critical Transmission Line"), None)
-                    if critical_line and not np.isnan(critical_line['loading_percent']):
-                        timestamp = metrics['timestamp']
-                        loading_percent = critical_line['loading_percent']
-                        with open(self.log_file, "a") as f:
-                            f.write(f"{timestamp},{loading_percent}\n")
-                    elif critical_line and np.isnan(critical_line['loading_percent']):
-                        # Log zero when breaker is open (no loading)
-                        timestamp = metrics['timestamp']
-                        with open(self.log_file, "a") as f:
-                            f.write(f"{timestamp},0.0\n")
-                    # ---------------------------------------------------
-
-                    # Save to shared file for web dashboard
-                    # Ensure the directory exists before writing
-                    web_data_path = '/shared_data/scada_data.json'
-                    os.makedirs(os.path.dirname(web_data_path), exist_ok=True)
-                    with open(web_data_path, 'w') as f:
-                        json.dump(metrics, f, indent=2)
+                            # Log zero when breaker is open (no loading)
+                            timestamp = metrics['timestamp']
+                            with open(self.log_file, "a") as f:
+                                f.write(f"{timestamp},0.0\n")
+                else:
+                    print("❌ Failed to get system metrics")
                 
-                self.simulation_time += 5
-                time.sleep(5)  # Update every 5 seconds
+                self.simulation_time += update_interval
+                time.sleep(update_interval)
                 
             except KeyboardInterrupt:
                 print("\n🛑 Simulation stopped by user")
                 break
             except Exception as e:
                 print(f"❌ Simulation error: {e}")
-                time.sleep(5)
+                import traceback
+                traceback.print_exc()
+                break
+        
+        print(f"\n✅ Test simulation completed!")
+        if self.log_to_file and os.path.exists(self.log_file):
+            print(f"📁 Log file saved to: {self.log_file}")
+
+def run_quick_test():
+    """Quick test to verify the system works"""
+    print("🧪 Running Quick Test...")
+    hmi = PowerSystemHMI_Standalone(log_to_file=False)
+    
+    # Test one iteration
+    metrics = hmi.get_system_metrics()
+    if metrics:
+        print("✅ Quick test passed!")
+        critical_line = next((line for line in metrics['lines'] if line['name'] == "Critical Transmission Line"), None)
+        if critical_line:
+            print(f"   Critical line loading: {critical_line['loading_percent']:.1f}%")
+        return True
+    else:
+        print("❌ Quick test failed!")
+        return False
 
 if __name__ == "__main__":
-    hmi = PowerSystemHMI()
-    hmi.run_simulation()
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "--quick":
+        run_quick_test()
+    else:
+        hmi = PowerSystemHMI_Standalone()
+        hmi.run_test_simulation(duration_seconds=120, update_interval=5)
