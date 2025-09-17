@@ -29,18 +29,6 @@ A comprehensive SCADA (Supervisory Control and Data Acquisition) system for powe
 
 ## 🚀 Quick Start
 
-### Method 1: Using Startup Scripts (Recommended)
-
-```bash
-# Start the system
-./start.sh
-
-# Check status
-./status.sh
-
-# Stop the system
-./stop.sh
-```
 
 ### Method 2: Manual Docker Compose
 
@@ -48,9 +36,13 @@ A comprehensive SCADA (Supervisory Control and Data Acquisition) system for powe
 # Start core services
 docker compose up -d
 
-# Start with console HMI as well
-docker compose --profile console up -d
+#use the script for loading program
+python automate_openplc.py --program plc_logic/programs/breaker_auto_cycle.st
+
+docker compose up -d scada_hmi 
 ```
+
+
 
 ## 📋 Proper Startup/Shutdown Protocol
 
