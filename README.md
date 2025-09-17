@@ -2,6 +2,8 @@
 
 A comprehensive SCADA (Supervisory Control and Data Acquisition) system for power grid monitoring and control, featuring OpenPLC integration and real-time web dashboard.
 
+Features an anomaly detector (blue team monitor) for the system that will detect the impact of red team attack on the loading percentage (representing an unnatural disruption in the physical process)
+
 ## 🏗️ System Architecture
 
 ```
